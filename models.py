@@ -57,10 +57,28 @@ class BiLSTM(nn.Module):
         # return output
         return out
 
+class CNNPATH(nn.Module):
+    def __init__(self, num_classes=9):
+        super().__init__()
+        self.conv1 = nn.Conv2d(3, 32, 3, 1)  # 3通道输入（RGB）
+        self.conv2 = nn.Conv2d(32, 64, 3, 1)
+        self.fc1 = nn.Linear(9216, 128)
+        self.fc2 = nn.Linear(128, num_classes)
+
+    def forward(self, x):
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = F.max_pool2d(x, 2)
+        x = torch.flatten(x, 1)
+        x = F.relu(self.fc1(x))
+        x = self.fc2(x)
+        return x
+
 def setup_model(model_architecture, num_classes = None, tokenizer = None, embedding_dim = None):
 
         available_models = {
             "CNNMNIST": CNNMNIST,
+            "CNNPATH": CNNPATH,
             "BiLSTM": BiLSTM,
             "ResNet18" : tv.models.resnet18,
             "VGG16" : tv.models.vgg16,
@@ -82,6 +100,9 @@ def setup_model(model_architecture, num_classes = None, tokenizer = None, embedd
             model.fc = nn.Linear(1024, num_classes)
         elif 'BiLSTM' in model_architecture:
              model = available_models[model_architecture](num_words =  len(tokenizer.word_index), embedding_dim = embedding_dim)
+        elif "CNN" in model_architecture:
+            # 处理 CNNMNIST / CNNPATH 等自定义 CNN
+            model = available_models[model_architecture](num_classes=num_classes)
         else:
             model = available_models[model_architecture]()
 

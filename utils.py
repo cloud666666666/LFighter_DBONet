@@ -7,6 +7,9 @@ import matplotlib.pyplot as plt
 from matplotlib.cbook import boxplot_stats
 from datasets import *
 from aggregation import *
+import torch.nn.functional as F
+import os
+os.makedirs("pca", exist_ok=True)
 
 eps = np.finfo(float).eps
 
@@ -82,7 +85,7 @@ def plot_updates_components(updates, peers_types, epoch):
                     edgecolors='gray',
                     s = 80)
     ax.legend(targets)
-    plt.savefig('pca\epoch{}.png'.format(epoch), dpi = 600)
+    plt.savefig('pca\\epoch{}.png'.format(epoch), dpi = 600)
     # plt.show()
 
 def plot_layer_components(updates, peers_types, epoch, layer = 'last_weight'):
@@ -114,7 +117,7 @@ def plot_layer_components(updates, peers_types, epoch, layer = 'last_weight'):
                     edgecolors='gray',
                     s = 80)
     ax.legend(targets)
-    plt.savefig('pca\epoch{}_layer_{}.png'.format(epoch, layer), dpi = 600)
+    plt.savefig('pca\\epoch{}_layer_{}.png'.format(epoch, layer), dpi = 600)
     plt.show()
 
 
@@ -122,7 +125,6 @@ def plot_source_target(updates, peers_types, epoch, classes):
    
     # res = {'updates':updates, 'peers_types':peers_types}
     # torch.save(res, 'results/epoch{}.t7'.format(epoch))
-
     flattened_updates = get_last_classes(updates, classes)
     flattened_updates = StandardScaler().fit_transform(flattened_updates)
     pca = PCA(n_components=2)
@@ -147,8 +149,11 @@ def plot_source_target(updates, peers_types, epoch, classes):
                     edgecolors='gray',
                     s = 80)
     ax.legend(targets)
-    plt.savefig('pca\epoch{}_srctarget.png'.format(epoch), dpi = 600)
+    plt.savefig('pca\\epoch{}_srctarget.png'.format(epoch), dpi = 600)
     plt.show()
+
+
+
 
 
 

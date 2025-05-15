@@ -16,6 +16,9 @@ alpha = 1):
     tokenizer = None
     if dataset_name == 'MNIST':
         trainset, testset = get_mnist()
+    elif dataset_name == 'PATHMNIST':
+        trainset, testset = get_pathmnist()
+
     elif dataset_name == 'CIFAR10':
         trainset, testset = get_cifar10()
     elif dataset_name == 'IMDB':
@@ -43,6 +46,23 @@ def get_mnist():
                         transform=transform)
     return trainset, testset
 
+
+from medmnist.dataset import PathMNIST
+from torchvision import transforms
+
+
+def get_pathmnist():
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.5,), (0.5,))
+    ])
+
+    trainset = PathMNIST(root='./data',split='train', transform=transform, download=True)
+    testset = PathMNIST(root='./data',split='test', transform=transform, download=True)
+
+    return trainset, testset
+
+
 # Get the original CIFAR10 data set
 def get_cifar10():
     data_dir = 'data/cifar/'
@@ -62,19 +82,29 @@ def get_imdb(num_peers = 10):
     # Read data
     df = pd.read_csv('data/imdb.csv')
     # Convert sentiment columns to numerical values
+
     df.sentiment = df.sentiment.apply(lambda x: 1 if x=='positive' else 0)
+    print(df['sentiment'].value_counts())
     # Tokenization
-    # use tf.keras for tokenization,  
+    # use tf.keras for tokenization,
+    df['review'] = df['review'].fillna('')  # ← 这一行加上！
+    df['review'] = df['review'].astype(str)
     tokenizer = tf.keras.preprocessing.text.Tokenizer()
-    tokenizer.fit_on_texts(df.review.values.tolist())
+    tokenizer.fit_on_texts(df['review'].dropna().astype(str).tolist())
+    #tokenizer.fit_on_texts(df.review.values.tolist())
 
         
     train_df = df.iloc[:40000].reset_index(drop=True)
     valid_df = df.iloc[40000:].reset_index(drop=True)
+    print("Train label distribution:", train_df['sentiment'].value_counts(normalize=True))
+    print("Valid label distribution:", valid_df['sentiment'].value_counts(normalize=True))
 
     # STEP 3: pad sequence
-    xtrain = tokenizer.texts_to_sequences(train_df.review.values)
-    xtest = tokenizer.texts_to_sequences(valid_df.review.values)
+    xtrain = tokenizer.texts_to_sequences(train_df['review'].dropna().astype(str).tolist())
+    xtest = tokenizer.texts_to_sequences(valid_df['review'].dropna().astype(str).tolist())
+
+    # xtrain = tokenizer.texts_to_sequences(train_df.review.values)
+    # xtest = tokenizer.texts_to_sequences(valid_df.review.values)
 
     # zero padding
     xtrain = tf.keras.preprocessing.sequence.pad_sequences(xtrain, maxlen=MAX_LEN)
@@ -93,8 +123,12 @@ def sample_dirichlet(dataset, num_users, alpha=1):
     classes = {}
     for idx, x in enumerate(dataset):
         _, label = x
-        if type(label) == torch.Tensor:
+        # if type(label) == torch.Tensor:
+        #     label = label.item()
+        if isinstance(label, torch.Tensor):
             label = label.item()
+        elif isinstance(label, np.ndarray):
+            label = int(label[0])
         if label in classes:
             classes[label].append(idx)
         else:
@@ -119,9 +153,9 @@ def sample_dirichlet(dataset, num_users, alpha=1):
     return peers_data_dict
 
 
-def sample_extreme(dataset, num_users, num_classes, classes_per_peer, samples_per_class):
+def sample_extreme(dataset, num_users, num_classes=10, classes_per_peer=1, samples_per_class=582):
     n = len(dataset)
-    num_classes = 10
+    #num_classes = 10
     peers_data_dict = {i: {'data':np.array([]), 'labels':[]} for i in range(num_users)}
     idxs = np.arange(n)
     labels = np.array(dataset.targets)
