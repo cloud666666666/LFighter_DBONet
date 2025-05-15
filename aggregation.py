@@ -11,6 +11,8 @@ import hdbscan
 from scipy.spatial.distance import cdist
 from scipy.stats import entropy
 from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
+
 from utils import *
 
 

@@ -4,7 +4,12 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from sklearn.decomposition import PCA
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
 import torch.optim as optim
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
 from sklearn.metrics import *
 from matplotlib import pyplot as plt
 from torch.utils.data import DataLoader
@@ -88,6 +93,8 @@ class Peer():
                 # if attacked:
                 #     target = (target + 1)%10
                 output = model(data)
+                target = target.view(-1).long()  # ✅ 加这句
+
                 loss = self.criterion(output, target)
                 loss.backward()    
                 epoch_loss.append(loss.item())
@@ -156,7 +163,6 @@ class FL:
         self.embedding_dim = 100
         self.peers = []
         self.trainset, self.testset = None, None
-        
         # Fix the random state of the environment
         random.seed(self.seed)
         np.random.seed(self.seed)
@@ -199,7 +205,6 @@ class FL:
             # print('# of peers who have source class examples:', k_src)
             m_ = int(self.attackers_ratio * self.num_peers)
             self.num_attackers = copy.deepcopy(m_)
-
         peers = list(np.arange(self.num_peers))  
         random.shuffle(peers)
         for i in peers:
@@ -231,6 +236,8 @@ class FL:
                 pred = output > 0.5 # get the index of the max log-probability
                 correct+= pred.eq(target.view_as(pred)).sum().item()
             else:
+                target = target.view(-1).long()  # ✅ 保证 target 是 [B] 的 long 类型
+
                 test_loss.append(self.criterion(output, target).item()) # sum up batch loss
                 pred = output.argmax(dim=1, keepdim=True) # get the index of the max log-probability
                 correct+= pred.eq(target.view_as(pred)).sum().item()
@@ -242,23 +249,29 @@ class FL:
         return  100.0*(float(correct) / n), test_loss
     #======================================= End of testning function =============================================================#
 #Test label prediction function    
-    def test_label_predictions(self, model, device, test_loader, dataset_name = None):
+    def test_label_predictions(self, model, device, test_loader, dataset_name=None):
         model.eval()
         actuals = []
         predictions = []
         with torch.no_grad():
             for data, target in test_loader:
-                data, target = data.to(self.device), target.to(self.device)
+                data, target = data.to(device), target.to(device)
+
+                if dataset_name != "IMDB":
+                    target = target.view(-1).long()  # ✅ 保证 target 是 1D long
+
                 output = model(data)
+
                 if dataset_name == 'IMDB':
                     prediction = output > 0.5
                 else:
                     prediction = output.argmax(dim=1, keepdim=True)
-                
-                actuals.extend(target.view_as(prediction))
+
+                actuals.extend(target.view(-1, 1))  # ✅ 统一扩展为 [B, 1]
                 predictions.extend(prediction)
+
         return [i.item() for i in actuals], [i.item() for i in predictions]
-    
+
     #choose random set of peers
     def choose_peers(self):
         #pick m random peers from the available list of peers
@@ -390,7 +403,8 @@ class FL:
                 global_weights = lfd.aggregate(copy.deepcopy(simulation_model), copy.deepcopy(local_models), peers_types)
                 cpu_runtimes.append(time.time() - cur_time)
 
-            
+
+
             elif rule == 'fedavg':
                 cur_time = time.time()
                 global_weights = average_weights(local_weights, [1 for i in range(len(local_weights))])
