@@ -9,6 +9,7 @@ import codecs
 import tensorflow as tf 
 import pandas as pd
 from datasets import *
+import os
 
 def distribute_dataset(dataset_name, num_peers, num_classes, dd_type = 'IID', classes_per_peer = 1, samples_per_class = 582, 
 alpha = 1):
@@ -48,17 +49,23 @@ def get_mnist():
 
 
 from medmnist.dataset import PathMNIST
+data_root = './data'
+os.environ['MEDMNIST_DATA_ROOT'] = data_root
 from torchvision import transforms
 
 
 def get_pathmnist():
+    # 手动设置下载路径，避免默认写入 ~/.medmnist/
+
+
     transform = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize((0.5,), (0.5,))
     ])
 
-    trainset = PathMNIST(root='./data',split='train', transform=transform, download=True)
-    testset = PathMNIST(root='./data',split='test', transform=transform, download=True)
+    # 自动判断是否需要下载
+    trainset = PathMNIST(root=data_root, split='train', transform=transform, download=not os.path.exists(os.path.join(data_root, 'pathmnist.npz')))
+    testset = PathMNIST(root=data_root, split='test', transform=transform, download=not os.path.exists(os.path.join(data_root, 'pathmnist.npz')))
 
     return trainset, testset
 

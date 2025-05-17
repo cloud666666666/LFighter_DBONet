@@ -2,9 +2,8 @@ from medmnist import PathMNIST
 import torchvision.transforms as transforms
 import torch
 import matplotlib
-matplotlib.use('TkAgg')  # ✅ 添加这行解决 PyCharm 后端错误
+matplotlib.use('Agg')  # ✅ 添加这行解决 PyCharm 后端错误
 import matplotlib.pyplot as plt
-
 # 加载 PathMNIST 数据集
 transform = transforms.ToTensor()
 dataset = PathMNIST(root='./data',split='train', download=True, transform=transform)
@@ -41,4 +40,4 @@ for i in range(9):
     axes[row, col].axis('off')
 
 plt.tight_layout()
-plt.show()
+plt.savefig("output.png")
