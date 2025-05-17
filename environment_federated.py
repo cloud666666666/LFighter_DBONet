@@ -19,6 +19,7 @@ from sampling import *
 from datasets import *
 import os
 import random
+from dbo_cluster import DBOClusterer
 from tqdm import tqdm_notebook
 import copy
 from operator import itemgetter
@@ -85,6 +86,32 @@ class Peer():
         t = 0
         for epoch in range(epochs):
             for batch_idx, (data, target) in enumerate(train_loader):
+                data, target = data.to(self.device), target.to(self.device)
+                data.requires_grad = True
+
+                if dataset_name == 'IMDB':
+                    target = target.view(-1).float()
+                else:
+                    target = target.view(-1).long()  # ✅ 提前确保是 1D long 类型
+
+                # 注册 hook
+                first_activation = None
+
+                def get_first_activation_hook(module, input, output):
+                    nonlocal first_activation
+                    first_activation = output.detach()
+
+                handle = list(model.children())[0].register_forward_hook(get_first_activation_hook)
+
+                output = model(data)
+                loss = self.criterion(output, target)  # ✅ 此时 target 格式合法
+                loss.backward()
+
+                # 提取视图
+                first_activation = first_activation.cpu().numpy()
+                input_grad = data.grad.cpu().numpy()
+
+                handle.remove()
                 if dataset_name == 'IMDB':
                     target = target.view(-1,1) * (1 - attacked)
 
@@ -125,7 +152,8 @@ class Peer():
         # print("Number of Attacks:{}".format(self.performed_attacks))
         # print('xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx')
         model = model.cpu()
-        return model.state_dict(), peer_grad , model, np.mean(epoch_loss), attacked, t
+        return model.state_dict(), peer_grad , model, np.mean(epoch_loss), attacked, t, [peer_grad[-1].cpu().numpy(), first_activation, input_grad]
+
 #======================================= End of training function =============================================================#
 #========================================= End of Peer class ====================================================================
 
@@ -329,14 +357,16 @@ class FL:
             i = 1        
             attacks = 0
             Peer._performed_attacks = 0
+            peer_feature_views = []
             for peer in selected_peers:
                 peers_types.append(mapping[self.peers[peer].peer_type])
                 # print(i)
                 # print('\n{}: {} Starts training in global round:{} |'.format(i, (self.peers_pseudonyms[peer]), (epoch + 1)))
-                peer_update, peer_grad, peer_local_model, peer_loss, attacked, t = self.peers[peer].participant_update(epoch, 
+                peer_update, peer_grad, peer_local_model, peer_loss, attacked, t,views = self.peers[peer].participant_update(epoch,
                 copy.deepcopy(simulation_model),
                 attack_type = attack_type, malicious_behavior_rate = malicious_behavior_rate, 
                 source_class = source_class, target_class = target_class, dataset_name = self.dataset_name)
+                peer_feature_views.append(views)
                 local_weights.append(peer_update)
                 local_grads.append(peer_grad)
                 local_losses.append(peer_loss) 
@@ -401,6 +431,13 @@ class FL:
             elif rule == 'lfighter':
                 cur_time = time.time()
                 global_weights = lfd.aggregate(copy.deepcopy(simulation_model), copy.deepcopy(local_models), peers_types)
+                cpu_runtimes.append(time.time() - cur_time)
+            elif rule == 'lfighter_dbo':
+                cur_time = time.time()
+                clusterer = DBOClusterer(n_clusters=2, device=self.device)
+                cluster_labels = clusterer.cluster(peer_feature_views)
+                scores = [1.0 if l == 0 else 0.0 for l in cluster_labels]
+                global_weights = average_weights(local_weights, scores)
                 cpu_runtimes.append(time.time() - cur_time)
 
 
