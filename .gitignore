@@ -1,14 +1,25 @@
-# 忽略虚拟环境
-.venv/
+# Python 缓存文件
+__pycache__/
+*.pyc
 
-# 忽略 Jupyter 检查点
+# Jupyter 检查点
 .ipynb_checkpoints/
 
-# 忽略输出图片等大文件
+# 虚拟环境
+.venv/
+
+# 数据集与模型文件
+*.npz
+*.t7
+*.pth
+*.pt
+*.ckpt
+
+# 可视化输出
 *.png
 *.jpg
-*.jpeg
-*.pt
-*.pth
-*.ckpt
+
+# 训练输出结果
+checkpoints/
+results/
 
