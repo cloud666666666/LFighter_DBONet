@@ -22,6 +22,7 @@ class DBONet(nn.Module):
 
         # 每个视图对应一个 block 序列（输入 -> 聚类空间）
         self.blocks = nn.ModuleList()
+        self.U = nn.ParameterList()
         for v in range(n_view):
             block_layers = []
             input_dim = nfeats[v]
@@ -30,6 +31,7 @@ class DBONet(nn.Module):
                 input_dim = 128
             block_layers.append(nn.Linear(128, n_clusters))
             self.blocks.append(nn.Sequential(*block_layers))
+            self.U.append(nn.Parameter(torch.randn(n_clusters, nfeats[v], device=device)))
 
         # 初始化共享聚类表示 Z
         if Z_init is not None:
@@ -73,3 +75,11 @@ class DBONet(nn.Module):
             XX = X @ X.T
             loss += torch.norm(ZZ - XX, p='fro') ** 2
         return alpha * loss
+
+    def encode_each_view(self, features):
+        Z_list = []
+        for i in range(self.n_view):
+            Zi = self.blocks[i](features[i])  # ✅ 正确调用每个视图的编码器（即 block）
+            Z_list.append(Zi)
+        return Z_list
+

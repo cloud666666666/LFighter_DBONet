@@ -71,8 +71,8 @@ class Peer():
                     train_loader = DataLoader(poisoned_data, self.local_bs, shuffle = True, drop_last=True)
                 self.performed_attacks+=1
                 attacked = 1
-                print('Label flipping attack launched by', self.peer_pseudonym, 'to flip class ', source_class,
-                ' to class ', target_class)
+                # print('Label flipping attack launched by', self.peer_pseudonym, 'to flip class ', source_class,
+                # ' to class ', target_class)
         lr=self.local_lr
 
         if dataset_name == 'IMDB':
@@ -106,12 +106,13 @@ class Peer():
                 output = model(data)
                 loss = self.criterion(output, target)  # ✅ 此时 target 格式合法
                 loss.backward()
-
+                handle.remove()
+                assert first_activation is not None, "⚠️ forward hook 未触发，请检查模型结构"
                 # 提取视图
                 first_activation = first_activation.cpu().numpy()
                 input_grad = data.grad.cpu().numpy()
 
-                handle.remove()
+
                 if dataset_name == 'IMDB':
                     target = target.view(-1,1) * (1 - attacked)
 
@@ -152,7 +153,10 @@ class Peer():
         # print("Number of Attacks:{}".format(self.performed_attacks))
         # print('xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx')
         model = model.cpu()
-        return model.state_dict(), peer_grad , model, np.mean(epoch_loss), attacked, t, [peer_grad[-1].cpu().numpy(), first_activation, input_grad]
+        return model.state_dict(), peer_grad , model, np.mean(epoch_loss), attacked, t, [peer_grad[-1].cpu().numpy(),   #输出梯度
+            first_activation,   #第一层激活值
+            input_grad]#输入梯度
+
 
 #======================================= End of training function =============================================================#
 #========================================= End of Peer class ====================================================================
@@ -436,9 +440,19 @@ class FL:
                 cur_time = time.time()
                 clusterer = DBOClusterer(n_clusters=2, device=self.device)
                 cluster_labels = clusterer.cluster(peer_feature_views)
+
+                # === 新增打印聚类效果 ===
+                from sklearn.metrics import confusion_matrix, classification_report
+
+                true_labels = [1 if self.peers[p].peer_type == 'attacker' else 0 for p in selected_peers]
+                # print("聚类 vs 实际攻击者标签:")
+                # print(confusion_matrix(true_labels, cluster_labels))
+                # print(classification_report(true_labels, cluster_labels, digits=3))
+
                 scores = [1.0 if l == 0 else 0.0 for l in cluster_labels]
                 global_weights = average_weights(local_weights, scores)
                 cpu_runtimes.append(time.time() - cur_time)
+
 
 
 
