@@ -1,0 +1,14 @@
+# 忽略虚拟环境
+.venv/
+
+# 忽略 Jupyter 检查点
+.ipynb_checkpoints/
+
+# 忽略输出图片等大文件
+*.png
+*.jpg
+*.jpeg
+*.pt
+*.pth
+*.ckpt
+
