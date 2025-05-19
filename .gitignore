@@ -7,7 +7,7 @@ aclImdb_v1/
 .idea
 # 虚拟环境
 .venv/
-
+/data
 # 数据集与模型文件
 *.npz
 *.t7
