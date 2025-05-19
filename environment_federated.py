@@ -10,7 +10,7 @@ from sklearn.preprocessing import StandardScaler
 import torch.optim as optim
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
-from sklearn.metrics import *
+from torch.cuda.amp import autocast, GradScaler
 from matplotlib import pyplot as plt
 from torch.utils.data import DataLoader
 from models import *
@@ -28,7 +28,16 @@ from random import shuffle
 from aggregation import *
 from IPython.display import clear_output
 import gc
+from sklearn.metrics import confusion_matrix, classification_report
+import torch
+try:
+    GPU_NAME = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU"
+except:
+    GPU_NAME = "Unknown"
 
+USE_AMP = torch.cuda.is_available() and "A100" in GPU_NAME
+
+print(f"[AMP] 当前设备: {GPU_NAME}, 是否启用 AMP: {USE_AMP}")
 class Peer():
     # Class variable shared among all the instances
     _performed_attacks = 0
@@ -55,10 +64,13 @@ class Peer():
         self.local_lr = local_lr
         self.local_momentum = local_momentum
         self.peer_type = peer_type
-#======================================= Start of training function ===========================================================#
+        self.USE_AMP = USE_AMP
+        self.scaler = GradScaler(enabled=self.USE_AMP)
+    #======================================= Start of training function ===========================================================#
     def participant_update(self, global_epoch, model, attack_type = 'no_attack', malicious_behavior_rate = 0, 
                             source_class = None, target_class = None, dataset_name = None) :
-        
+        optimizer = torch.optim.SGD(model.parameters(), lr=self.local_lr, momentum=self.local_momentum)
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.5)
         epochs = self.local_epochs
         train_loader = DataLoader(self.local_data, self.local_bs, shuffle = True, drop_last=True)
         attacked = 0
@@ -68,7 +80,15 @@ class Peer():
             if r <= malicious_behavior_rate:
                 if dataset_name != 'IMDB':
                     poisoned_data = label_filp(self.local_data, source_class, target_class)
-                    train_loader = DataLoader(poisoned_data, self.local_bs, shuffle = True, drop_last=True)
+                    train_loader = DataLoader(
+                        poisoned_data,
+                        batch_size=self.local_bs,
+                        shuffle=True,
+                        drop_last=True,
+                        num_workers=0,  # ✅ 多线程加载
+                        pin_memory=True  # ✅ 固定内存（GPU加速传输）
+                    )
+
                 self.performed_attacks+=1
                 attacked = 1
                 # print('Label flipping attack launched by', self.peer_pseudonym, 'to flip class ', source_class,
@@ -92,9 +112,8 @@ class Peer():
                 if dataset_name == 'IMDB':
                     target = target.view(-1).float()
                 else:
-                    target = target.view(-1).long()  # ✅ 提前确保是 1D long 类型
+                    target = target.view(-1).long()
 
-                # 注册 hook
                 first_activation = None
 
                 def get_first_activation_hook(module, input, output):
@@ -103,15 +122,27 @@ class Peer():
 
                 handle = list(model.children())[0].register_forward_hook(get_first_activation_hook)
 
-                output = model(data)
-                loss = self.criterion(output, target)  # ✅ 此时 target 格式合法
-                loss.backward()
+                optimizer.zero_grad()
+                with autocast(enabled=self.USE_AMP):
+                    output = model(data)
+                    loss = self.criterion(output, target)
+
+                if self.USE_AMP:
+                    self.scaler.scale(loss).backward()
+                    self.scaler.step(optimizer)
+                    self.scaler.update()
+                else:
+                    loss.backward()
+                    optimizer.step()
+
+                model.zero_grad()
+
                 handle.remove()
                 assert first_activation is not None, "⚠️ forward hook 未触发，请检查模型结构"
-                # 提取视图
+
+                # 提取特征
                 first_activation = first_activation.cpu().numpy()
                 input_grad = data.grad.cpu().numpy()
-
 
                 if dataset_name == 'IMDB':
                     target = target.view(-1,1) * (1 - attacked)
@@ -124,7 +155,7 @@ class Peer():
                 target = target.view(-1).long()  # ✅ 加这句
 
                 loss = self.criterion(output, target)
-                loss.backward()    
+                self.scaler.scale(loss).backward()
                 epoch_loss.append(loss.item())
                 # get gradients
                 cur_time = time.time()
@@ -135,7 +166,8 @@ class Peer():
                         else:
                             peer_grad[i]+= params.grad.clone()   
                 t+= time.time() - cur_time    
-                optimizer.step()
+                self.scaler.step(optimizer)
+                self.scaler.update()
                 model.zero_grad()
                 optimizer.zero_grad()
                
@@ -153,9 +185,9 @@ class Peer():
         # print("Number of Attacks:{}".format(self.performed_attacks))
         # print('xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx')
         model = model.cpu()
-        return model.state_dict(), peer_grad , model, np.mean(epoch_loss), attacked, t, [peer_grad[-1].cpu().numpy(),   #输出梯度
-            first_activation,   #第一层激活值
-            input_grad]#输入梯度
+        return model.state_dict(), peer_grad , model, np.mean(epoch_loss), attacked, t, [peer_grad[-1].cpu().numpy(),   #output gradient
+            first_activation,   #First level activation value
+            input_grad]#Input Gradient
 
 
 #======================================= End of training function =============================================================#
@@ -163,12 +195,17 @@ class Peer():
 
 
 class FL:
-    def __init__(self, dataset_name, model_name, dd_type, num_peers, frac_peers, 
-    seed, test_batch_size, criterion, global_rounds, local_epochs, local_bs, local_lr,
-    local_momentum, labels_dict, device, attackers_ratio = 0,
-    class_per_peer=2, samples_per_class= 250, rate_unbalance = 1, alpha = 1,source_class = None):
+    def __init__(self, dataset_name, model_name, dd_type, num_peers,
+                 frac_peers, seed, test_batch_size, criterion, global_rounds,
+                 local_epochs, local_bs, local_lr, local_momentum,
+                 labels_dict, device, attackers_ratio,
+                 class_per_peer, samples_per_class,
+                 rate_unbalance, alpha, source_class,
+                 USE_AMP=False):  # ✅ 添加这一行参数（并给默认值）
 
         FL._history = np.zeros(num_peers)
+        self.scaler = GradScaler(enabled=USE_AMP)  # USE_AMP 是 True（A100）或 False（CPU/3060）
+        self.USE_AMP = USE_AMP
         self.dataset_name = dataset_name
         self.model_name = model_name
         self.num_peers = num_peers
@@ -206,9 +243,14 @@ class FL:
         self.trainset, self.testset, user_groups_train, tokenizer = distribute_dataset(self.dataset_name, self.num_peers, self.num_classes, 
         self.dd_type, self.class_per_peer, self.samples_per_class, self.alpha)
 
-        self.test_loader = DataLoader(self.testset, batch_size = self.test_batch_size,
-            shuffle = False, num_workers = 1)
-    
+        self.test_loader = DataLoader(
+            self.testset,
+            batch_size=self.test_batch_size,
+            shuffle=False,
+            num_workers=0,  # ✅ 提高加载效率
+            pin_memory=True
+        )
+
         #Creating model
         self.global_model = setup_model(model_architecture = self.model_name, num_classes = self.num_classes, 
         tokenizer = tokenizer, embedding_dim = self.embedding_dim)
@@ -262,7 +304,8 @@ class FL:
         n = 0
         for batch_idx, (data, target) in enumerate(test_loader):
             data, target = data.to(self.device), target.to(self.device)
-            output = model(data)
+            with autocast(enabled=USE_AMP):
+                output = model(data)
             if dataset_name == 'IMDB':
                 test_loss.append(self.criterion(output, target.view(-1,1)).item()) # sum up batch loss
                 pred = output > 0.5 # get the index of the max log-probability
@@ -366,10 +409,12 @@ class FL:
                 peers_types.append(mapping[self.peers[peer].peer_type])
                 # print(i)
                 # print('\n{}: {} Starts training in global round:{} |'.format(i, (self.peers_pseudonyms[peer]), (epoch + 1)))
+                # print(f"[DEBUG] Starting training for peer {peer}...")
                 peer_update, peer_grad, peer_local_model, peer_loss, attacked, t,views = self.peers[peer].participant_update(epoch,
                 copy.deepcopy(simulation_model),
                 attack_type = attack_type, malicious_behavior_rate = malicious_behavior_rate, 
                 source_class = source_class, target_class = target_class, dataset_name = self.dataset_name)
+                # print(f"[DEBUG] Finished training for peer {peer}")
                 peer_feature_views.append(views)
                 local_weights.append(peer_update)
                 local_grads.append(peer_grad)
@@ -440,18 +485,25 @@ class FL:
                 cur_time = time.time()
                 clusterer = DBOClusterer(n_clusters=2, device=self.device)
                 cluster_labels = clusterer.cluster(peer_feature_views)
-
-                # === 新增打印聚类效果 ===
-                from sklearn.metrics import confusion_matrix, classification_report
-
                 true_labels = [1 if self.peers[p].peer_type == 'attacker' else 0 for p in selected_peers]
                 # print("聚类 vs 实际攻击者标签:")
                 # print(confusion_matrix(true_labels, cluster_labels))
                 # print(classification_report(true_labels, cluster_labels, digits=3))
 
+                # ✅ 标签方向判断
+                cm = confusion_matrix(true_labels, cluster_labels)
+                if cm[0][0] + cm[1][1] < cm[0][1] + cm[1][0]:
+                    cluster_labels = [1 - l for l in cluster_labels]
+                    # print("⚠️ 聚类标签方向颠倒，已自动纠正")
+
+                # ✅ 聚类指标
+                from sklearn.metrics import adjusted_rand_score
+                # print("ARI (Adjusted Rand Index):", adjusted_rand_score(true_labels, cluster_labels))
+
                 scores = [1.0 if l == 0 else 0.0 for l in cluster_labels]
                 global_weights = average_weights(local_weights, scores)
                 cpu_runtimes.append(time.time() - cur_time)
+
 
 
 
@@ -530,7 +582,16 @@ class FL:
                     print('{0:10s} - {1:.1f}'.format(classes[i], r[i]/np.sum(r)*100))
                     if i == source_class:
                         source_class_accuracies.append(np.round(r[i]/np.sum(r)*100, 2))
-                        asr = np.round(r[target_class]/np.sum(r)*100, 2)
+                        actuals = np.array(actuals)
+                        preds = np.array(predictions)
+
+                        source_mask = (actuals == source_class)
+                        n_source = source_mask.sum()
+                        n_attacked = np.sum(preds[source_mask] == target_class)
+
+                        asr = round(n_attacked / n_source * 100, 2) if n_source > 0 else 0.0
+
+
 
         state = {
                 'state_dict': simulation_model.state_dict(),

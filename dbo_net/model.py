@@ -55,14 +55,22 @@ class DBONet(nn.Module):
     def compute_loss(self, Z, H_list, laplacians, alpha=0.1, beta=0.1):
         # (1) 显式特征一致性损失
         consistency_loss = sum(torch.norm(Z - H, p=2) for H in H_list)
-
         # (2) 隐式图结构保持损失
         graph_loss = sum(torch.trace(Z.T @ L @ Z) for L in laplacians)
-
         return alpha * consistency_loss + beta * graph_loss
 
     def get_cluster_labels(self, Z):
         return torch.argmax(Z, dim=1)
+
+    def fuse_views(self, Z_list, weights=None):
+        """
+        将多个视图的 latent 表征融合为一个 Z_concat。
+        支持权重加权或简单平均。
+        """
+        if weights is not None:
+            assert len(weights) == len(Z_list), "权重数量必须与视图数量一致"
+            return sum(w * Z for w, Z in zip(weights, Z_list))
+        return torch.mean(torch.stack(Z_list), dim=0)
 
     def compute_implicit_loss(self, Z, X_list, alpha=1.0, beta=0.1):
         """

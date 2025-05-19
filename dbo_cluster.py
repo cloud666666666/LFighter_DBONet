@@ -1,21 +1,21 @@
-# dbo_cluster.py
 import torch
 from dbo_net.model import DBONet
 from sklearn.preprocessing import StandardScaler
 from sklearn.cluster import KMeans
-import numpy as np
-import torch.nn.functional as F
-from dbo_loss import reconstruction_loss, sparsity_loss, view_alignment_loss
 from sklearn.decomposition import PCA
+import numpy as np
+from dbo_loss import reconstruction_loss, sparsity_loss, view_alignment_loss
 
 
 class DBOClusterer:
-    def __init__(self, n_clusters=2, device='cpu', n_epochs=10, lr=1e-3):
+    def __init__(self, n_clusters=2, device='cpu', n_epochs=10, lr=1e-3,
+                 pca_dims=[None, 512, 128]):  # 每个视图降维维度（None 表示不降维）
         self.n_clusters = n_clusters
         self.device = torch.device(device if torch.cuda.is_available() else 'cpu')
         self.model = None
         self.n_epochs = n_epochs
         self.lr = lr
+        self.pca_dims = pca_dims
 
     def build_model(self, view_dims, n_blocks=2):
         self.model = DBONet(
@@ -27,84 +27,82 @@ class DBOClusterer:
         ).to(self.device)
 
     def train(self, features):
+        VIEW_WEIGHTS = [0.5, 0.3, 0.2]
         self.model.train()
         optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
 
         for epoch in range(self.n_epochs):
             optimizer.zero_grad()
 
-            Z_list = self.model.encode_each_view(features)  # 获取每个视图的 Z
-            Z_concat = self.model(features)  # 多视图融合后的 Z（用于聚类）
+            Z_list = self.model.encode_each_view(features)
+            Z_concat = self.model.fuse_views(Z_list, weights=VIEW_WEIGHTS)
 
             loss = 0
-            # 逐视图损失
             for i in range(len(features)):
                 Xi = features[i]
                 Zi = Z_list[i]
                 Ui = self.model.U[i]
+                loss += reconstruction_loss(Xi, Ui, Zi)
+                loss += sparsity_loss(Zi, l1_weight=1e-3)
 
-                loss += reconstruction_loss(Xi, Ui, Zi)  # 显式重构项
-                loss += sparsity_loss(Zi, l1_weight=1e-3)  # 稀疏约束
-
-            # 多视图对齐损失
             loss += view_alignment_loss(Z_list)
-
+            loss += self.model.compute_implicit_loss(Z_concat, features) * 1.0
             loss.backward()
             optimizer.step()
 
+        self.Z_final = Z_concat.detach().cpu().numpy()
+
     def cluster(self, peer_views):
-        n_peers = len(peer_views)
-        n_views = len(peer_views[0]) if n_peers > 0 else 0
-        features = []
-        MAX_FEATURE_DIM = 512
+        """
+        peer_views: List[List[Tensor]], 每个元素是一个 peer 的多视图特征
+        """
+        peer_views = [[torch.tensor(v, dtype=torch.float32) if not isinstance(v, torch.Tensor) else v
+                       for v in peer] for peer in peer_views]
 
-        # print("[Debug] ▶️ 开始构造特征视图，n_peers =", n_peers, ", n_views =", n_views)
+        # 解包每种视图
+        views_by_type = list(zip(*peer_views))
+        features = [torch.stack(view_list).to(self.device) for view_list in views_by_type]
 
-        for v in range(n_views):
-            view_data_raw = [peer_views[i][v] for i in range(n_peers)]
+        # ✅ flatten 所有高维视图为 [B, D]
+        flattened_features = []
+        for i, f in enumerate(features):
+            if f.ndim > 2:
+                f = f.view(f.shape[0], -1)
+                # print(f"[Flatten] View {i} flattened to shape {f.shape}")
+            else:
+                print(f"[Flatten] View {i} kept as shape {f.shape}")
+            flattened_features.append(f)
+        features = flattened_features
 
-            # 检查每个 peer 的该视图是否为合法 array
-            for i, vdata in enumerate(view_data_raw):
-                if vdata is None:
-                    raise ValueError(f"[Error] Peer {i} 的视图 {v} 为 None，请检查 participant_update 返回值")
-                if not hasattr(vdata, 'shape'):
-                    raise ValueError(f"[Error] Peer {i} 的视图 {v} 非 array，类型为 {type(vdata)}")
+        # ✅ 执行 PCA 降维
+        reduced_features = []
+        for i, feat in enumerate(features):
+            feat_np = feat.cpu().numpy()
+            target_dim = self.pca_dims[i]
 
-            try:
-                view_data = np.stack([x.flatten() for x in view_data_raw], axis=0)  # [n_peers, feature_dim]
-            except Exception as e:
-                raise RuntimeError(f"[Error] stacking 第 {v} 个视图失败: {e}")
+            if target_dim is not None:
+                max_allowed_dim = min(feat_np.shape[0], feat_np.shape[1])  # min(n_samples, n_features)
+                actual_dim = min(target_dim, max_allowed_dim)
+                if actual_dim < 1:
+                    raise ValueError(f"[PCA] View {i} too small for PCA: shape {feat_np.shape}")
 
-            # print(f"[Debug] ✔️ 视图 {v} shape: {view_data.shape}")
-            if view_data.shape[1] > MAX_FEATURE_DIM:
-                from sklearn.decomposition import PCA
-                max_pca_dim = min(MAX_FEATURE_DIM, view_data.shape[0])
-                # print(f"[Debug] ⚠️ View {v} 维度太大 ({view_data.shape[1]}), 执行 PCA 降维至 {max_pca_dim}")
-                pca = PCA(n_components=max_pca_dim)
-                view_data = pca.fit_transform(view_data)
+                pca = PCA(n_components=actual_dim)
+                reduced = pca.fit_transform(feat_np)
+                # print(f"[PCA] View {i}: {feat_np.shape} -> ({feat_np.shape[0]}, {actual_dim})")
+                reduced_features.append(torch.tensor(reduced, dtype=torch.float32).to(self.device))
+            else:
+                # print(f"[PCA] View {i}: {feat_np.shape} -> [skip]")
+                reduced_features.append(feat)
 
-            view_data = StandardScaler().fit_transform(view_data)
-            view_tensor = torch.tensor(view_data, dtype=torch.float32, device=self.device)
-            features.append(view_tensor)
-
-        # print("[Debug] ✅ 所有视图构建完成")
-        # for idx, f in enumerate(features):
-            # print(f" - features[{idx}].shape = {f.shape}")
+        features = reduced_features
+        view_dims = [f.shape[1] for f in features]
 
         if self.model is None:
-            view_dims = [f.shape[1] for f in features]
-            # print("[Debug] 🚀 构建模型，view_dims =", view_dims)
-            assert all(d > 0 for d in view_dims), "🚨 有视图维度为0，U 初始化将失败"
             self.build_model(view_dims)
 
-        # === Step 1: 训练模型，优化 latent 表征 ===
-        self.train(features)
-
-        # === Step 2: 聚类得到标签 ===
         self.model.eval()
-        with torch.no_grad():
-            Z = self.model(features)
-            pred = self.model.get_cluster_labels(Z)
+        self.train(features)  # ⬅️ 必须保留计算图，允许 loss.backward()
+        Z_scaled = StandardScaler().fit_transform(self.Z_final)
+        pred = KMeans(n_clusters=self.n_clusters).fit_predict(Z_scaled)
 
-        return pred.cpu().numpy().tolist()
-
+        return pred
