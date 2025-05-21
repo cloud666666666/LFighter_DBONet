@@ -200,7 +200,7 @@ class FL:
                  local_epochs, local_bs, local_lr, local_momentum,
                  labels_dict, device, attackers_ratio,
                  class_per_peer, samples_per_class,
-                 rate_unbalance, alpha, source_class,
+                 rate_unbalance, alpha, source_class,target_class,
                  USE_AMP=False):  # ✅ 添加这一行参数（并给默认值）
 
         FL._history = np.zeros(num_peers)
@@ -231,6 +231,9 @@ class FL:
         self.alpha = alpha
         self.embedding_dim = 100
         self.peers = []
+        self.source_class = source_class
+        self.target_class = target_class
+
         self.trainset, self.testset = None, None
         # Fix the random state of the environment
         random.seed(self.seed)
@@ -394,7 +397,18 @@ class FL:
         for epoch in tqdm_notebook(range(start_round, self.global_rounds)):
             gc.collect()
             torch.cuda.empty_cache()
-            
+            if epoch == 0 and rule == "lfighter_dbo" and (self.source_class is None or self.target_class is None):
+
+                # 提取 local_models 的输出层
+                output_weights = [model[-2] for model in local_models]  # 线性层 weight, shape=[C,D]
+                dw = [self.global_model[-2] - lw for lw in output_weights]  # 差值
+
+                avg_dw = torch.stack(dw).mean(0)  # 平均输出层变化，shape=[C,D]
+                class_norms = torch.norm(avg_dw, dim=1)  # 每类改动的范数，shape=[C]
+
+                sorted_classes = torch.argsort(class_norms, descending=True)
+                self.source_class, self.target_class = sorted_classes[:2].tolist()
+
             # if epoch % 20 == 0:
             #     clear_output()  
             print(f'\n | Global training round : {epoch+1}/{self.global_rounds} |\n')

@@ -29,7 +29,7 @@ def run_exp(dataset_name, model_name, dd_type,
                local_epochs=local_epochs, local_bs=local_bs, local_lr=local_lr, local_momentum=local_momentum,
                labels_dict=labels_dict, device=device, attackers_ratio=attackers_ratio,
                class_per_peer=class_per_peer, samples_per_class=samples_per_class,
-               rate_unbalance=rate_unbalance, alpha=alpha, source_class=source_class,
+               rate_unbalance=rate_unbalance, alpha=alpha, source_class=source_class,target_class=target_class,
                USE_AMP=USE_AMP)  # ✅ 添加这行
     flEnv.run_experiment(
         attack_type=attack_type,

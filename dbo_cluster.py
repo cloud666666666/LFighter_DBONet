@@ -27,7 +27,7 @@ class DBOClusterer:
         ).to(self.device)
 
     def train(self, features):
-        VIEW_WEIGHTS = [0.5, 0.3, 0.2]
+        VIEW_WEIGHTS = [0.6, 0.3, 0.1]
         self.model.train()
         optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
 
@@ -69,8 +69,8 @@ class DBOClusterer:
             if f.ndim > 2:
                 f = f.view(f.shape[0], -1)
                 # print(f"[Flatten] View {i} flattened to shape {f.shape}")
-            else:
-                print(f"[Flatten] View {i} kept as shape {f.shape}")
+            # else:
+            #     print(f"[Flatten] View {i} kept as shape {f.shape}")
             flattened_features.append(f)
         features = flattened_features
 
@@ -86,8 +86,11 @@ class DBOClusterer:
                 if actual_dim < 1:
                     raise ValueError(f"[PCA] View {i} too small for PCA: shape {feat_np.shape}")
 
+                # 在 PCA 降维前，加上标准化：
+                feat_np = StandardScaler().fit_transform(feat_np)
                 pca = PCA(n_components=actual_dim)
                 reduced = pca.fit_transform(feat_np)
+
                 # print(f"[PCA] View {i}: {feat_np.shape} -> ({feat_np.shape[0]}, {actual_dim})")
                 reduced_features.append(torch.tensor(reduced, dtype=torch.float32).to(self.device))
             else:
