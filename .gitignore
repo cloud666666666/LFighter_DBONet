@@ -14,6 +14,7 @@ aclImdb_v1/
 *.pth
 *.pt
 *.ckpt
+data
 
 # 可视化输出
 *.png
