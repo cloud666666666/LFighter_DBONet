@@ -5,6 +5,7 @@ from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 import numpy as np
 from dbo_loss import reconstruction_loss, sparsity_loss, view_alignment_loss
+import torch.nn.functional as F
 
 
 class DBOClusterer:
@@ -16,6 +17,7 @@ class DBOClusterer:
         self.n_epochs = n_epochs
         self.lr = lr
         self.pca_dims = pca_dims
+        self.view_weights = None  # 可学习的视图权重
 
     def build_model(self, view_dims, n_blocks=2):
         self.model = DBONet(
@@ -25,17 +27,30 @@ class DBOClusterer:
             blocks=n_blocks,
             device=self.device
         ).to(self.device)
+        
+        # 初始化可学习的视图权重，设置为 0.7、0.2、0.1 的分布
+        initial_weights = torch.tensor([0.7, 0.2, 0.1], device=self.device)
+        
+        self.view_weights = torch.nn.Parameter(
+            initial_weights,
+            requires_grad=True
+        )
 
     def train(self, features):
-        VIEW_WEIGHTS = [0.6, 0.3, 0.1]
         self.model.train()
-        optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
+        optimizer = torch.optim.Adam([
+            {'params': self.model.parameters()},
+            {'params': self.view_weights, 'lr': self.lr * 0.1}  # 权重学习率稍小
+        ], lr=self.lr)
 
         for epoch in range(self.n_epochs):
             optimizer.zero_grad()
 
             Z_list = self.model.encode_each_view(features)
-            Z_concat = self.model.fuse_views(Z_list, weights=VIEW_WEIGHTS)
+            
+            # 使用 softmax 确保权重和为 1
+            normalized_weights = F.softmax(self.view_weights, dim=0)
+            Z_concat = self.model.fuse_views(Z_list, weights=normalized_weights)
 
             loss = 0
             for i in range(len(features)):
@@ -51,6 +66,8 @@ class DBOClusterer:
             optimizer.step()
 
         self.Z_final = Z_concat.detach().cpu().numpy()
+        self.final_weights = F.softmax(self.view_weights, dim=0).detach().cpu().numpy()
+        print(self.final_weights)
 
     def cluster(self, peer_views):
         """
